@@ -62,10 +62,27 @@ def _tokenizer(reader):
         for key, value in reader.fields.items() if key.startswith('tokenizer.')})
 
 
+_FD_IO_LOCK = Lock()
+
+
+def _read_at(fd, size, offset):
+    # Portable positional read (os.pread is Unix-only; the shared fd offset
+    # must be guarded because callers may run concurrently).
+    with _FD_IO_LOCK:
+        os.lseek(fd, offset, os.SEEK_SET)
+        return os.read(fd, size)
+
+
+def _write_at(fd, data, offset):
+    with _FD_IO_LOCK:
+        os.lseek(fd, offset, os.SEEK_SET)
+        return os.write(fd, data)
+
+
 def _digest_slice(fd, offset, size):
     digest = hashlib.sha256()
     while size:
-        data = os.pread(fd, min(size, 8 * 1024**2), offset)
+        data = _read_at(fd, min(size, 8 * 1024**2), offset)
         if not data:
             raise ValueError('Incomplete tensor payload')
         digest.update(data)
@@ -323,7 +340,7 @@ def refine(args):
         shutil.copyfile(args.model, partial)
     if partial.stat().st_size != args.model.stat().st_size:
         raise ValueError('Partial output has the wrong size')
-    fd = os.open(partial, os.O_RDWR)
+    fd = os.open(partial, os.O_RDWR | getattr(os, 'O_BINARY', 0))
     lock = Lock()
     previous_threads = torch.get_num_threads()
     torch.set_num_threads(args.threads)
@@ -385,7 +402,7 @@ def refine(args):
                     payload = encoded.tobytes()
                     if len(payload) != raw[expert].nbytes:
                         raise ValueError('Refinement changed native storage size')
-                    if os.pwrite(fd, payload, tensor.data_offset + expert * len(payload)) != len(payload):
+                    if _write_at(fd, payload, tensor.data_offset + expert * len(payload)) != len(payload):
                         raise OSError('Incomplete tensor write')
                     detail.append(dict(expert=expert, seen=seen, rows=len(x), calibration_mode=mode,
                         loss_before=before, loss_after=after, changed_codes=int((initial != state.q).sum())))

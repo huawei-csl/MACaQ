@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import threading
 import time
 import tempfile
 
@@ -141,9 +142,14 @@ class DirectGGUF:
                 header.unlink()
                 raise ValueError(f'Insufficient free disk space for {position / 1024**3:.1f} GiB output plus working margin')
             header.replace(partial)
-        self.fd = os.open(partial, os.O_RDWR)
+        self.fd = os.open(partial, os.O_RDWR | getattr(os, 'O_BINARY', 0))
+        self._io_lock = threading.Lock()
         try:
-            os.posix_fallocate(self.fd, 0, position)
+            if hasattr(os, 'posix_fallocate'):
+                os.posix_fallocate(self.fd, 0, position)
+            else:
+                # Windows: zero-extend the file to its final size
+                os.truncate(self.fd, position)
         except BaseException:
             os.close(self.fd)
             raise
@@ -157,7 +163,9 @@ class DirectGGUF:
         position = self.offsets[name] + byte_offset
         done = 0
         while done < len(payload):
-            count = os.pwrite(self.fd, payload[done:], position + done)
+            with self._io_lock:
+                os.lseek(self.fd, position + done, os.SEEK_SET)
+                count = os.write(self.fd, payload[done:])
             if count <= 0:
                 raise OSError(f'Incomplete write: {name}')
             done += count
@@ -168,7 +176,9 @@ class DirectGGUF:
         digest = hashlib.sha256()
         position, remaining = self.offsets[name], self.expected[name]
         while remaining:
-            block = os.pread(self.fd, min(remaining, 8 * 1024**2), position)
+            with self._io_lock:
+                os.lseek(self.fd, position, os.SEEK_SET)
+                block = os.read(self.fd, min(remaining, 8 * 1024**2))
             if not block:
                 raise ValueError(f'Cannot read completed tensor {name}')
             digest.update(block)

@@ -21,6 +21,10 @@ def sha256(path):
 def binary(directory, name):
     path = directory / name
     if not path.is_file() or not os.access(path, os.X_OK):
+        # Windows: executables carry a .exe suffix
+        exe = directory / f'{name}.exe'
+        if exe.is_file() and os.access(exe, os.X_OK):
+            return str(exe.resolve())
         raise ValueError(f'Missing executable {path}; build the vendored llama.cpp first')
     return str(path.resolve())
 
