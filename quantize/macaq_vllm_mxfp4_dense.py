@@ -202,11 +202,17 @@ def _dense_w4a4_kernel(
     bsc_ptrs = bsc_ptr + offs_n[:, None] * stride_bsn + offs_ks[None, :]
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for _ in range(0, tl.cdiv(K, BLOCK_K)):
-        a = tl.load(a_ptrs, mask=m_mask[:, None], other=0)
-        b = tl.load(b_ptrs, mask=n_mask[:, None], other=0)
-        asc = tl.load(asc_ptrs, mask=m_mask[:, None], other=127)
-        bsc = tl.load(bsc_ptrs, mask=n_mask[:, None], other=127)
+    for block in range(0, tl.cdiv(K, BLOCK_K)):
+        # The K extent is not always a multiple of BLOCK_K (hidden sizes such as
+        # 896, 1152 or 2176), so mask the tail tile. Without this the last tile
+        # reads the next row / past the tensor, and the E8M0 bytes there become
+        # huge exponents that corrupt the output.
+        valid_kb = block * (BLOCK_K // 2) + offs_kb < K // 2
+        valid_ks = block * (BLOCK_K // 32) + offs_ks < K // 32
+        a = tl.load(a_ptrs, mask=m_mask[:, None] & valid_kb[None, :], other=0)
+        b = tl.load(b_ptrs, mask=n_mask[:, None] & valid_kb[None, :], other=0)
+        asc = tl.load(asc_ptrs, mask=m_mask[:, None] & valid_ks[None, :], other=127)
+        bsc = tl.load(bsc_ptrs, mask=n_mask[:, None] & valid_ks[None, :], other=127)
         acc = tl.dot_scaled(a, asc, "e2m1", b.T, bsc, "e2m1", acc)
         a_ptrs += BLOCK_K // 2
         b_ptrs += BLOCK_K // 2

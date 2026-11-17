@@ -145,11 +145,16 @@ def _dense_w4a4_kernel(
     bsc_ptrs = bsc_ptr + offs_n[:, None] * stride_bsn + offs_ks[None, :]
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for _ in range(0, tl.cdiv(K, BLOCK_K)):
-        a = tl.load(a_ptrs, mask=m_mask[:, None], other=0)
-        b = tl.load(b_ptrs, mask=n_mask[:, None], other=0)
-        asc = tl.load(asc_ptrs, mask=m_mask[:, None], other=127)
-        bsc = tl.load(bsc_ptrs, mask=n_mask[:, None], other=127)
+    for block in range(0, tl.cdiv(K, BLOCK_K)):
+        # Mask the K tail: callers may pass a BLOCK_K that does not divide K
+        # (mxfp4_w4a4_linear keeps the 256 default, and `tiles=` can override
+        # the shape-aware choice), which otherwise reads past the row.
+        valid_kb = block * (BLOCK_K // 2) + offs_kb < K // 2
+        valid_ks = block * (BLOCK_K // 32) + offs_ks < K // 32
+        a = tl.load(a_ptrs, mask=m_mask[:, None] & valid_kb[None, :], other=0)
+        b = tl.load(b_ptrs, mask=n_mask[:, None] & valid_kb[None, :], other=0)
+        asc = tl.load(asc_ptrs, mask=m_mask[:, None] & valid_ks[None, :], other=127)
+        bsc = tl.load(bsc_ptrs, mask=n_mask[:, None] & valid_ks[None, :], other=127)
         acc = tl.dot_scaled(a, asc, "e2m1", b.T, bsc, "e2m1", acc)
         a_ptrs += BLOCK_K // 2
         b_ptrs += BLOCK_K // 2
@@ -226,11 +231,16 @@ def _dense_w4a4_bf16_kernel(
     bsc_ptrs = bsc_ptr + offs_n[:, None] * stride_bsn + offs_ks[None, :]
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-    for _ in range(0, tl.cdiv(K, BLOCK_K)):
-        a = tl.load(a_ptrs, mask=m_mask[:, None], other=0)
-        b = tl.load(b_ptrs, mask=n_mask[:, None], other=0)
-        asc = tl.load(asc_ptrs, mask=m_mask[:, None], other=127)
-        bsc = tl.load(bsc_ptrs, mask=n_mask[:, None], other=127)
+    for block in range(0, tl.cdiv(K, BLOCK_K)):
+        # Mask the K tail: callers may pass a BLOCK_K that does not divide K
+        # (mxfp4_w4a4_linear keeps the 256 default, and `tiles=` can override
+        # the shape-aware choice), which otherwise reads past the row.
+        valid_kb = block * (BLOCK_K // 2) + offs_kb < K // 2
+        valid_ks = block * (BLOCK_K // 32) + offs_ks < K // 32
+        a = tl.load(a_ptrs, mask=m_mask[:, None] & valid_kb[None, :], other=0)
+        b = tl.load(b_ptrs, mask=n_mask[:, None] & valid_kb[None, :], other=0)
+        asc = tl.load(asc_ptrs, mask=m_mask[:, None] & valid_ks[None, :], other=127)
+        bsc = tl.load(bsc_ptrs, mask=n_mask[:, None] & valid_ks[None, :], other=127)
         acc = tl.dot_scaled(a, asc, "e2m1", b.T, bsc, "e2m1", acc)
         a_ptrs += BLOCK_K // 2
         b_ptrs += BLOCK_K // 2
