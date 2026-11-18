@@ -101,7 +101,10 @@ def dequantize_mxfp4(packed: torch.Tensor, e8m0: torch.Tensor, K: int) -> torch.
     code = torch.stack([lo, hi], dim=-1).reshape(T, K).long()
     sign = torch.where((code >> 3) & 1 == 1, -1.0, 1.0)
     val = sign * _E2M1_MAG.to(packed.device)[code & 7]
-    scale = torch.exp2((e8m0.float() - 127)).repeat_interleave(32, dim=1)
+    # pack_mxfp4_from_signed_index pads the scale grid to (ceil(out/128)*128,
+    # ceil(nblk/4)*4); read only the real T x (K // 32) window so the packer
+    # output can be decoded directly.
+    scale = torch.exp2((e8m0.view(torch.uint8)[:T, : K // 32].float() - 127)).repeat_interleave(32, dim=1)
     return val * scale
 
 
